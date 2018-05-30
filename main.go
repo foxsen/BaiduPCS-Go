@@ -35,7 +35,7 @@ import (
 
 var (
 	// Version 版本号
-	Version = "v3.5.2-devel"
+	Version = "v3.5.3-devel"
 
 	historyFilePath = filepath.Join(pcsconfig.GetConfigDir(), "pcs_command_history.txt")
 	reloadFn        = func(c *cli.Context) error {
@@ -66,6 +66,8 @@ var (
 	GZIP <disable-gzip>:
 		在文件加密之前, 启用GZIP压缩文件; 文件解密之后启用GZIP解压缩文件, 默认启用,
 		如果不启用, 则无法检测文件是否解密成功, 解密文件时会保留源文件, 避免解密失败造成文件数据丢失.`
+
+	isCli bool
 )
 
 func init() {
@@ -126,6 +128,7 @@ func main() {
 			return
 		}
 
+		isCli = true
 		pcsverbose.Verbosef("VERBOSE: 这是一条调试信息\n\n")
 
 		var (
@@ -924,7 +927,9 @@ func main() {
 					return nil
 				}
 
-				var saveTo string
+				var (
+					saveTo string
+				)
 
 				if c.Bool("save") {
 					saveTo = "."
@@ -932,7 +937,7 @@ func main() {
 					saveTo = filepath.Clean(c.String("saveto"))
 				}
 
-				pcscommand.RunDownload(c.Args(), pcscommand.DownloadOption{
+				do := &pcscommand.DownloadOptions{
 					IsTest:               c.Bool("test"),
 					IsPrintStatus:        c.Bool("status"),
 					IsExecutedPermission: c.Bool("x") && runtime.GOOS != "windows",
@@ -942,7 +947,14 @@ func main() {
 					IsStreaming:          c.Bool("stream"),
 					SaveTo:               saveTo,
 					Parallel:             c.Int("p"),
-				})
+				}
+
+				if c.Bool("bg") && isCli {
+					pcscommand.RunBgDownload(c.Args(), do)
+				} else {
+					pcscommand.RunDownload(c.Args(), do)
+				}
+
 				return nil
 			},
 			Flags: []cli.Flag{
@@ -985,6 +997,39 @@ func main() {
 				cli.IntFlag{
 					Name:  "p",
 					Usage: "指定下载线程数",
+				},
+				cli.BoolFlag{
+					Name:  "bg",
+					Usage: "加入后台下载",
+				},
+			},
+		},
+		{
+			Name:  "bg",
+			Usage: "管理后台任务",
+			Description: `
+	默认关闭下载中任何向终端的输出
+	再后台进行文件下载，不会影响用户继续在客户端操作
+	可以同时进行多个任务
+
+	示例:
+
+	显示所有后台任务
+	BaiduPCS-Go bg
+`,
+			Category: "其他",
+			Before:   reloadFn,
+			Action: func(c *cli.Context) error {
+				if c.NArg() == 0 {
+					pcscommand.BgMap.PrintAllBgTask()
+					return nil
+				}
+				return nil
+			},
+			Flags: []cli.Flag{
+				cli.BoolFlag{
+					Name:  "test",
+					Usage: "测试下载, 此操作不会保存文件到本地",
 				},
 			},
 		},
