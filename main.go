@@ -1023,8 +1023,14 @@ func main() {
 
 				subArgs := c.Args()
 
-				pcscommand.RunUpload(subArgs[:c.NArg()-1], subArgs[c.NArg()-1])
+				pcscommand.RunUpload(subArgs[:c.NArg()-1], subArgs[c.NArg()-1], c.Bool("tmpfile"))
 				return nil
+			},
+			Flags: []cli.Flag{
+				cli.BoolFlag{
+					Name:  "tmpfile",
+					Usage: "上传临时文件",
+				},
 			},
 		},
 		{

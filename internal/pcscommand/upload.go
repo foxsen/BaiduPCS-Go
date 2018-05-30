@@ -233,7 +233,7 @@ func RunCreateSuperFile(targetPath string, blockList ...string) {
 }
 
 // RunUpload 执行文件上传
-func RunUpload(localPaths []string, savePath string) {
+func RunUpload(localPaths []string, savePath string, isTmpFile bool) {
 	absSavePath, err := getAbsPath(savePath)
 	if err != nil {
 		fmt.Printf("警告: 上传文件, 获取网盘路径 %s 错误, %s\n", savePath, err)
@@ -414,8 +414,7 @@ func RunUpload(localPaths []string, savePath string) {
 
 		fmt.Printf("[%d] 秒传失败, 开始上传文件...\n\n", task.ID)
 
-		// 秒传失败, 开始上传文件
-		pcsError := pcs.Upload(task.savePath, func(uploadURL string, jar *cookiejar.Jar) (resp *http.Response, uperr error) {
+		uploadFunc := func(uploadURL string, jar *cookiejar.Jar) (resp *http.Response, uperr error) {
 			h := requester.NewHTTPClient()
 			h.SetCookiejar(jar)
 			setupHTTPClient(h)
@@ -463,14 +462,104 @@ func RunUpload(localPaths []string, savePath string) {
 			u.Execute()
 			close(exitChan)
 			return
-		})
+		}
+
+		// 秒传失败, 开始上传文件
+		if (isTmpFile) {
+			md5, err := pcs.UploadTmpFile(uploadFunc)
+			fmt.Printf("%s\n", md5)
+			if err != nil {
+				handleTaskErr(task, "上传文件失败", err)
+				continue
+			}
+		} else {
+			// >2GB?
+			if task.uploadInfo.Length >= 2 * 1024 * 1024 * 1024 {
+			//if task.uploadInfo.Length >= 2 * 1024 * 1024 {
+				var len int64 = 0
+				var slicen int = 0
+				var size int64 = 0
+				var has_error bool = false
+				var md5s []string
+
+				const slice_len int64 = 512 * 1024 * 1024;
+				
+				main_task := task
+				task = &utask{
+					ListTask: ListTask{
+						ID:       -1,
+						MaxRetry: 3,
+					},
+					uploadInfo: &LocalPathInfo{
+						Path: "",
+					},
+					savePath: main_task.savePath,
+				}
+				for (len < main_task.uploadInfo.Length) {
+					// create a tmp file by reading a given trunk from original file
+					task.uploadInfo.Path = fmt.Sprintf("%s.%d", main_task.uploadInfo.Path, slicen) 
+
+					dst, err := os.OpenFile(task.uploadInfo.Path, os.O_WRONLY|os.O_CREATE, 0644)
+					if err != nil {
+						fmt.Printf("创建临时文件%s失败", task.uploadInfo.Path)
+						has_error = true
+						break;
+	     				}
+					if (main_task.uploadInfo.Length - len >= slice_len) {
+						size = slice_len
+					} else {
+						size = main_task.uploadInfo.Length - len
+					}
+					fmt.Printf("length=%d, path=%s, file=%p\n", main_task.uploadInfo.Length, main_task.uploadInfo.Path, main_task.uploadInfo.file)
+					fmt.Printf("Reading %d bytes from source to temp file %s\n", size, task.uploadInfo.Path)
+					copied, e := io.CopyN(dst, main_task.uploadInfo.file, size)
+					if (copied != size || e != nil) {
+						fmt.Printf("copied = %d\n", copied);
+						//fmt.Printf(e);
+						has_error = true;
+						break;
+					}
+					dst.Close()
+
+					// open tmp file into task structure
+					if !task.uploadInfo.OpenPath() {
+						fmt.Printf("文件%s不可读, 跳过...\n", task.uploadInfo.Path)
+						task.uploadInfo.Close()
+						has_error = true
+						break;
+					}
+					md5, err1 := pcs.UploadTmpFile(uploadFunc)
+					fmt.Printf("%s\n", md5)
+					os.Remove(task.uploadInfo.Path)
+					if err1 != nil {
+						handleTaskErr(task, "上传临时文件失败", err1)
+						break;
+					}
+					md5s = append(md5s, md5)
+					slicen = slicen + 1;
+					len = len + size
+				}
+				if !has_error {
+					// 合并所有临时文件
+					err := pcs.UploadCreateSuperFile(main_task.savePath, md5s...)
+					if (err != nil)  { has_error = true; }
+					task = main_task;
+				} 
+				if (has_error) {
+					handleTaskErr(task, "上传文件失败", err)
+					continue
+	     			}
+			} else {
+				err := pcs.Upload(task.savePath, uploadFunc)
+				if err != nil {
+					handleTaskErr(task, "上传文件失败", err)
+					continue
+	     			}
+			}
+		}
 
 		fmt.Printf("\n")
 
-		if pcsError != nil {
-			handleTaskErr(task, "上传文件失败", pcsError)
-			continue
-		}
 
 		fmt.Printf("[%d] 上传文件成功, 保存到网盘路径: %s\n", task.ID, task.savePath)
 		task.uploadInfo.Close() // 关闭文件
